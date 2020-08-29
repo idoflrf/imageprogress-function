@@ -1,0 +1,261 @@
+/*imageprogress-getlabel
+获取8连通的连通域坐标信息，包括坐标、矩形边界点、面积。通过面积最大值最小值筛选符合范围的连通域。
+opencv自带boundary api但很难返回相关信息出于需要自己编写单次遍历扫描的连通域提取算法并返回相关坐标信息。
+基于opencv与C++标准库
+输入：opencv的C++模板Mat类型src图像；输出:Mat类型imlabel图像、各类信息vector向量。
+tips：缺省最大值最小值置0即不需要排除面积过大或过小区域，筛选面积是为了方便目标检测去燥与大面积干扰。其他面积边界点
+等返回信息是后面额外加的所以没有编写重载，可以直接删除带着相关变量的语句不影响运行。*/
+------------------------------------------------------------------------------------------------------------------------------------------
+/*src：输入图像；imlabel：去除边界面积外的区域后的图像；area：面积列表，存储第i个区域的面积；
+rectloc：矩形框边界点，第i个连通域xy4个方向的边界坐标，rectloc[i] :(colmin，colmax，rowmin, rowmax);
+large:过大面积区域内所有坐标，如需要所有区域的坐标可以自行添加各label的stpoint、endpoint和rowlist，
+large[i]:([k(区域内第k个团)](坐标起始点stpoint，终点endpoint，行号rowlist))；
+minarea限制的最小面积，maxarea限制的最大面积 都是用像素数表示*/
+--------------------------------------------------------------------------------------------------------------------------
+#include <iostream>
+#include <vector>
+#include <opencv2/opencv.hpp>
+#include<cmath>
+#include <stdio.h>
+#include <io.h>
+void imlabel(Mat src, Mat &imlabel,vector<int>&area,vector<Vec4i>&rectloc,vector<vector<Vec3i>>&large, const int minarea=0,const int maxarea=0)
+{
+	vector<int>stpoint, endpoint, rowlist;//st行标记的起点，end行标记终点，rowlist列号
+	vector<int>length,labelarea,minx,maxx,miny,maxy;//几个区域信息 每行长度，面积 边界点等；如果不需要就把带这些变量全部语句删除不影响运行
+	Mat result(src.rows,src.cols,CV_8UC1,Scalar::all(0));//去除面积范围外后的图像
+	int num=0;
+	/*逐行遍历记录每条一维连通起始点和行号，length向量记录每个块的长度同一个区域的length元素相加即为面积*/
+	for (int i = 0; i < src.rows; i++)
+	{
+		const uchar *ptr = src.ptr<uchar>(i);
+		if (ptr[0] != 0)
+		{
+			num++;
+			stpoint.push_back(0);
+			rowlist.push_back(i);
+		}
+		for (int j = 1; j < src.cols; j++)
+		{
+			if (ptr[j] != 0&&ptr[j-1]==0)
+			{
+				num++;
+				stpoint.push_back(j);
+				rowlist.push_back(i);
+			}
+			else if (ptr[j - 1] != 0 && ptr[j] == 0)
+			{
+				endpoint.push_back(j-1);
+				length.push_back(j - stpoint.back());
+			}
+		}
+		if (ptr[src.cols - 1] != 0)
+		{
+			endpoint.push_back(src.cols - 1);
+			length.push_back(src.cols - stpoint.back());
+		}
+	}
+	/*labels是初始标签记录直接重叠的团，eqpair记录间接连通的等价对*/
+	vector<int>labels(num);
+	vector<Vec4i>indvec;
+	vector<pair<int, int>>eqpair;
+	int offset = 1;
+	int index = 1;
+	int curindex = 0;
+	int currow = 0;
+	int firstindex = 0;
+	int lastindex = -1;
+	for (int i = 0; i < num; i++)
+	{
+		if (rowlist[i] != currow)
+		{
+			currow = rowlist[i];
+			firstindex = curindex;
+			lastindex = i - 1;
+			curindex = i;
+		}
+		for (int j = firstindex; j <= lastindex; j++)
+		{
+			if (stpoint[i] <= endpoint[j] + offset&&endpoint[i] >= stpoint[j] - offset)
+			{
+				if (labels[i] == 0)
+				{
+					labels[i] = labels[j];
+					if (stpoint[i] < indvec[labels[j] - 1][0])
+						indvec[labels[j] - 1][0] = stpoint[i];		
+					if (endpoint[i] > indvec[labels[j] - 1][1])
+						indvec[labels[j] - 1][1] = endpoint[i];
+					if (rowlist[i] < indvec[labels[j] - 1][2])
+						indvec[labels[j] - 1][2] = rowlist[i];
+					if (rowlist[i] > indvec[labels[j] - 1][3])
+					{indvec[labels[j] - 1][3] = rowlist[i];}
+					labelarea[labels[j] - 1] += length[i];
+				}
+				else if (labels[i] != labels[j])
+				{
+					eqpair.push_back(make_pair(labels[i], labels[j]));
+				}
+			}
+		}
+		/*不牵扯等价对的直接push入列表*/
+		if (labels[i] == 0)
+		{
+			Vec4i ind(stpoint[i], endpoint[i], rowlist[i], rowlist[i]);
+			/*ind[0] = stpoint[i];
+			ind[1] = endpoint[i];
+			ind[2] = rowlist[i];
+			ind[3] = rowlist[i];*/
+			labels[i] = index++;
+			indvec.push_back(ind);
+			labelarea.push_back(length[i]);
+		}
+	}
+	/*等价表合并*/
+	int maxlabel = *max_element(labels.begin(), labels.end());
+	vector<vector<bool>>tab(maxlabel, vector<bool>(maxlabel, false));
+	vector<pair<int, int>>::iterator pairnode = eqpair.begin();
+	while (pairnode != eqpair.end())
+	{
+		tab[pairnode->first - 1][pairnode->second - 1] = true;
+		tab[pairnode->second - 1][pairnode->first - 1] = true;
+		pairnode++;
+	}
+	vector<int>flag(maxlabel, 0);
+	vector<vector<int>>eqlist;
+	vector<int>tempvec;
+	for (int i = 1; i <= maxlabel; i++)
+	{
+
+		if (flag[i - 1])
+		{
+			continue;
+		}
+		rectloc.push_back (indvec[i-1]);
+		int n = rectloc.size() - 1;
+		flag[i - 1] = eqlist.size() + 1;
+		tempvec.push_back(i);
+		area.push_back(labelarea[i - 1]);
+		for (vector<int>::size_type j = 0; j < tempvec.size(); j++)
+		{
+			for (vector<bool>::size_type k = 0; k!= tab.size(); k++)
+			{
+				if (tab[tempvec[j] - 1][k] && !flag[k])
+				{
+					tempvec.push_back(k + 1);
+					area.back() += labelarea[k];
+					flag[k] = eqlist.size() + 1;
+					if (indvec[k][0] < rectloc[n][0])
+						rectloc[n][0] = indvec[k][0];
+					if (indvec[k][1] > rectloc[n][1])
+						rectloc[n][1] = indvec[k][1];
+					if (indvec[k][2] < rectloc[n][2])
+						rectloc[n][2] = indvec[k][2];
+					if (indvec[k][3] > rectloc[n][3])
+						rectloc[n][3] = indvec[k][3];
+					
+				}
+			}
+		}
+		eqlist.push_back(tempvec);
+		tempvec.clear();
+	}
+	/*连通域编号*/
+	for (vector<int>::size_type i = 0; i != labels.size(); i++)
+	{
+		labels[i] = flag[labels[i] - 1];
+	}
+	/*去除面积超出或小于边界的连通域并统计剩余区域的边界点等最后画出结果二值图像
+	若最大最小面积边界缺省置0则不去除*/
+	if (rowlist.size() != NULL)
+	{
+		if (minarea != 0 && maxarea != 0)
+		{
+			for (int i = 0; i < area.size(); i++)
+			{
+				if (area[i] > maxarea)
+				{
+					vector<Vec3i>areanode;
+					for (int j = 0; j < labels.size(); j++)
+					{
+						if (labels[j] == i + 1)
+						{
+							Vec3i ind(stpoint[j], endpoint[j], rowlist[j]);
+							/*ind[0] = stpoint[j];
+							ind[1] = endpoint[j];
+							ind[2] = rowlist[j];*/
+							areanode.push_back(ind);
+						}
+
+					}
+					large.push_back(areanode);
+				}
+			}
+			for (int i = 0; i < rowlist.size(); i++)
+			{
+				if (area[labels[i] - 1] > minarea&&area[labels[i] - 1] < maxarea)
+				{
+					uchar *ptr = result.ptr<uchar>(rowlist[i]);
+					for (int j = stpoint[i]; j <= endpoint[i]; j++)
+					{
+						*(ptr + j) = 255;
+					}
+				}
+			}
+			for (int i = 0; i < area.size(); i++)
+			{
+				if ((area[i] < minarea) || (area[i] > maxarea))
+				{
+					area.erase(area.begin() + i);
+					rectloc.erase(rectloc.begin() + i);
+					i--;
+				}
+				/*if ((area[i] < minarea))
+				{
+					area.erase(area.begin() + i);
+					rectloc.erase(rectloc.begin() + i);
+				}*/
+			}
+			
+
+		}
+		else if (minarea != 0 && maxarea == 0)
+		{
+			for (int i = 0; i < rowlist.size(); i++)
+			{
+
+				if (area[labels[i] - 1] > minarea)
+				{
+					uchar *ptr = result.ptr<uchar>(rowlist[i]);
+					for (int j = stpoint[i]; j <= endpoint[i]; j++)
+					{
+						*(ptr + j) = 255;
+					}
+				}
+			}
+			for (int i = 0; i < area.size(); i++)
+			{
+				if (area[i] < minarea)
+				{
+					area.erase(area.begin() + i);
+					rectloc.erase(rectloc .begin() + i);
+					i--;
+				}
+			}
+		}
+		else
+		{
+			for (int i = 0; i < rowlist.size(); i++)
+			{
+
+				if (area[labels[i] - 1] > minarea&&area[labels[i] - 1] < maxarea)
+				{
+					uchar *ptr = result.ptr<uchar>(rowlist[i]);
+					for (int j = stpoint[i]; j <= endpoint[i]; j++)
+					{
+						*(ptr + j) = 255;
+					}
+				}
+			}
+		}
+	}
+                imlabel = result;
+}
