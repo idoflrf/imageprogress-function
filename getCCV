@@ -1,0 +1,69 @@
+/*提取颜色聚合向量，概念原理很简单可以自行查阅相关
+输入opencv基于c++模板Mat类img，直方图规格，颜色分段数，返回一个向量
+目的是为了SVM训练用特征向量，所以直接返回一维单向量，以<m1,n1><m2,n2>....的顺序float类型*/
+-----------------------------------------------------------------------------------------------------
+/*提取直方图，输入RGB空间图像*/
+Mat discretizeColors(Mat img, int numColors, int &updatedNumC)
+{
+	int H = img.cols;
+	int W = img.rows;
+	Mat oneChannel(W, H, CV_8UC1, Scalar(0));
+	int numofBins = floor(pow(2, log2(numColors) / 3));
+	int numofBinSQ = numofBins*numofBins;
+	for (int i = 0; i < W; i++)
+	{
+		uchar* ptr = img.ptr<uchar>(i);
+		for (int j = 0; j < H; j++)
+		{
+			ptr[3 * j] = floor(ptr[3 * j] / (256 / numofBins));
+			ptr[3 * j+1] = floor(ptr[3 * j+1] / (256 / numofBins));
+			ptr[3 * j+2] = floor(ptr[3 * j+2] / (256 / numofBins));
+		}
+	}
+	for (int i = 0; i < W; i++)
+	{
+		uchar* ptr = img.ptr<uchar>(i);
+		uchar* re = oneChannel.ptr<uchar>(i);
+		for (int j = 0; j < H; j++)
+		{
+			re[j] = ptr[3 * j] + ptr[3 * j + 1] * numofBins + ptr[3 * j + 2] * numofBinSQ;
+		}
+	}
+	updatedNumC = pow(numofBins, 3);
+	return oneChannel;
+}
+
+/*提取颜色聚合向量*/
+vector<float> getCCV(Mat img, int coherentPrec, int numberofColors)
+{
+	vector<float> CCV;
+	GaussianBlur(img, img, Size(3, 3), 3, 3);
+	int updNumofPix;
+	Mat imgsingle;
+	imgsingle = discretizeColors(img,numberofColors, updNumofPix);
+	int imsize = imgsingle.cols*img.rows;
+	int th = (coherentPrec*imsize / 100);
+	for (int i = 0; i < updNumofPix; i++)
+	{
+		Mat BW(imgsingle.rows, imgsingle.cols, CV_8UC1,Scalar(0));
+		BW.setTo(255, imgsingle == i);
+		vector<vector<Point>> contours;
+		findContours(BW, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
+		vector<vector<Point> >::iterator itr;
+		itr = contours.begin();
+		int large = 0;
+		int small = 0;
+		while (itr != contours.end())
+		{
+			int area = contourArea(*itr);
+			if (area > th)
+				large += area;
+			else
+				small += area;
+			itr++;
+		}
+		CCV.push_back(large);
+		CCV.push_back(small);
+	}
+	return CCV;
+}
